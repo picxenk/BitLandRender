@@ -145,10 +145,12 @@ export function buildMap({ terrain, objects: objRows }) {
   }
 
   map.ground = renderGround(map, face, flats);
+  // 3D 카메라 뷰용 바닥: 절벽면을 그리지 않는다 (3D에서는 절벽이 실제 벽으로 선다)
+  map.floor = renderGround(map, face, flats, { floor: true });
   return map;
 }
 
-function renderGround(map, face, flats) {
+function renderGround(map, face, flats, { floor = false } = {}) {
   const cv = document.createElement('canvas');
   cv.width = map.pxW;
   cv.height = map.pxH;
@@ -161,7 +163,7 @@ function renderGround(map, face, flats) {
   // 1차 채색 → 2차 장식 → 언덕 가장자리
   each((tx, ty) => map.terrainAt(tx, ty).base(ctx, tx * TILE, ty * TILE, c(tx, ty)));
   each((tx, ty) => map.terrainAt(tx, ty).overlay?.(ctx, tx * TILE, ty * TILE, c(tx, ty)));
-  each((tx, ty) => { if (!map.isFace(tx, ty)) drawRim(ctx, tx, ty, map); });
+  each((tx, ty) => { if (floor || !map.isFace(tx, ty)) drawRim(ctx, tx, ty, map); });
 
   // 절벽면(세로 run 단위) + 그 아래 그림자
   for (let tx = 0; tx < map.W; tx++) {
@@ -169,7 +171,7 @@ function renderGround(map, face, flats) {
       if (!face[ty * map.W + tx]) continue;
       let t1 = ty;
       while (t1 < map.H && face[t1 * map.W + tx]) t1++;
-      drawFaceRun(ctx, tx, ty, t1 - ty, map);
+      if (!floor) drawFaceRun(ctx, tx, ty, t1 - ty, map);
       if (t1 < map.H) drawCliffShadow(ctx, tx, t1);
       ty = t1;
     }

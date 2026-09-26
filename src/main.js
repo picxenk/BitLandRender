@@ -5,6 +5,8 @@ import { loadMap, drawObject, drawShadow } from './map.js';
 import { FILTERS, createFilterState } from './filters.js';
 import { mountFilterPanel, FILTER_KEYS } from './ui.js';
 import { spawnAnimals, updateAnimals, drawAnimal, drawAnimalShadow, isHigh } from './animals.js';
+import { createCamera3D } from './camera3d.js';
+import { createCameraController, createAlbum, ROLL } from './photo.js';
 
 // ── 설정 ───────────────────────────────────────────────────────
 const W = 160, H = 144;         // 게임보이 해상도
@@ -44,6 +46,17 @@ function fit() {
 addEventListener('resize', fit);
 fit();
 
+// ── 카메라 모드 (3D 뷰) / 앨범 ───────────────────────────────────
+const cam3d = createCamera3D(fx.gl, W, H);
+const camCtl = createCameraController();
+const album = createAlbum(W, H);
+await album.load();
+let viewMode = 'walk';          // 'walk' | 'camera' | 'album'
+let albumFrom = 'walk';         // 앨범을 닫으면 돌아갈 모드
+let albumIndex = 0;
+let deleteArmed = false;        // Delete 두 번 눌러야 삭제
+let shotPending = false;
+
 // ── 상태 ───────────────────────────────────────────────────────
 const player = { x: 0, y: 0, dir: 'down', anim: 0, moving: false, prone: q.has('prone') };
 const state = {
@@ -75,6 +88,7 @@ async function reloadMap(keepPosition) {
     }
     if (map.warnings.length) console.warn('map warnings:\n' + map.warnings.join('\n'));
     animals = spawnAnimals(map, player, SEED);
+    cam3d.build(map);
     hudText = '';
   } catch (e) {
     console.error(e);
@@ -90,9 +104,57 @@ const MOVE = {
   ArrowUp: [0, -1], KeyW: [0, -1],
   ArrowDown: [0, 1], KeyS: [0, 1],
 };
+function enterCamera() {
+  viewMode = 'camera';
+  player.moving = false;
+  player.anim = 0;
+  camCtl.enter(player);
+  sceneStep = -1;
+}
+function exitCamera() {
+  viewMode = 'walk';
+  player.dir = camCtl.facing();   // 카메라가 보던 쪽을 바라본다
+  sceneStep = -1;
+}
+function openAlbum() {
+  if (!album.count) { flashHud('앨범이 비어 있습니다 — E 카메라 · Space 촬영'); return; }
+  albumFrom = viewMode;
+  viewMode = 'album';
+  albumIndex = album.count - 1;   // 가장 최근 사진부터
+  deleteArmed = false;
+  fx.showImage(album.get(albumIndex).canvas);
+}
+function closeAlbum() {
+  viewMode = albumFrom;
+  sceneStep = -1;
+}
+function albumKey(e) {
+  const n = album.count;
+  if (e.code === 'ArrowLeft' || e.code === 'KeyA') albumIndex = (albumIndex - 1 + n) % n;
+  else if (e.code === 'ArrowRight' || e.code === 'KeyD') albumIndex = (albumIndex + 1) % n;
+  else if (e.code === 'Enter') album.download(albumIndex);
+  else if (e.code === 'Delete' || e.code === 'Backspace') {
+    if (!deleteArmed) { deleteArmed = true; return; }
+    album.remove(albumIndex);
+    if (!album.count) { closeAlbum(); return; }
+    albumIndex = Math.min(albumIndex, album.count - 1);
+  } else if (e.code === 'Escape' || e.code === 'KeyG') { closeAlbum(); return; }
+  else return;
+  deleteArmed = false;
+  fx.showImage(album.get(albumIndex).canvas);
+}
+
+let hudFlash = '', hudFlashT = 0;
+function flashHud(msg) { hudFlash = msg; hudFlashT = 2.5; }
+
 addEventListener('keydown', (e) => {
   if (MOVE[e.code]) { keys.add(e.code); e.preventDefault(); }
+  if (e.code === 'Space' || e.code === 'Backspace') e.preventDefault();
   if (e.repeat) return;
+  if (viewMode === 'album') { albumKey(e); return; }
+  if (e.code === 'KeyE') { viewMode === 'camera' ? exitCamera() : enterCamera(); return; }
+  if (e.code === 'KeyG') { openAlbum(); return; }
+  if (e.code === 'Space' && viewMode === 'camera') { shotPending = true; return; }
   if (e.code === 'KeyT') state.cycle = !state.cycle;
   if (e.code === 'KeyB') state.mode = state.mode === 1 ? 0 : 1;
   if (e.code === 'KeyR') state.mode = state.mode === 2 ? 0 : 2;
@@ -114,7 +176,17 @@ function tileUnder() {
 }
 
 function update(dt) {
+  hudFlashT = Math.max(0, hudFlashT - dt);
+  if (viewMode === 'album') return;          // 앨범을 보는 동안 세계는 멈춘다
   clock += dt;
+  if (viewMode === 'camera') {
+    // WASD/방향키는 카메라 조작. 캐릭터는 제자리 (X 엎드리기는 가능)
+    player.moving = false;
+    camCtl.update(dt, keys, player);
+    updateAnimals(animals, dt, map, player);
+    if (state.cycle) state.time = (state.time + dt / DAY_LENGTH) % 1;
+    return;
+  }
   let dx = 0, dy = 0;
   for (const k of keys) { dx += MOVE[k][0]; dy += MOVE[k][1]; }
   dx = Math.sign(dx); dy = Math.sign(dy);
@@ -208,8 +280,7 @@ function renderScene() {
     }
   }
 
-  // 낮/밤: time 0 = 정오, 0.5 = 자정
-  const light = 0.3 + 0.7 * (0.5 + 0.5 * Math.cos(state.time * Math.PI * 2));
+  const light = dayLight();
   lastLight = light;
 
   fx.renderScene({
@@ -224,6 +295,43 @@ function renderScene() {
   });
 }
 let lastLight = 1;
+
+// 낮/밤: time 0 = 정오, 0.5 = 자정
+function dayLight() {
+  return 0.3 + 0.7 * (0.5 + 0.5 * Math.cos(state.time * Math.PI * 2));
+}
+
+// 카메라 모드: 3D 씬 → (같은) 디더/팔레트 패스. withUI=false 는 사진 저장용
+function renderCamera(withUI) {
+  const light = dayLight();
+  lastLight = light;
+  if (withUI) camCtl.drawOverlay(ctx, W, H, { count: album.count });
+  const tex = cam3d.render({
+    ...camCtl.view(player, map),
+    light,
+    time: clock,
+    animals,
+    overlay: withUI ? scene : null,
+  });
+  fx.renderScene({
+    sourceTex: tex,
+    cam: { x: 0, y: 0 },
+    light: 1,                       // 조명은 3D 셰이더에서 이미 처리
+    lightPos: { x: -9999, y: -9999 },
+    mode: state.mode,
+    palette: PALETTES[state.palette],
+    time: clock,
+    uniforms: filters.uniforms('dither'),
+  });
+}
+
+// 셔터: UI 없이 한 번 그려서 4색 프레임을 저장한 뒤, 셔터 막 연출
+function takePhoto() {
+  if (album.full) { camCtl.rollFull(); return; }
+  renderCamera(false);
+  album.add(fx.readLow(), { zoom: +camCtl.zoom.toFixed(1) });
+  camCtl.shutter();
+}
 
 // 패스 2(필름). 그레인/먼지가 살아 있도록 매 프레임 호출
 function present() {
@@ -259,7 +367,18 @@ let hudText = '';
 function updateHud(light) {
   const modes = ['dither', 'quantize only', 'raw buffer'];
   const u = tileUnder();
-  const t =
+  let t;
+  if (hudFlashT > 0) t = hudFlash;
+  else if (viewMode === 'album') {
+    const p = album.get(albumIndex);
+    t = `ALBUM ${albumIndex + 1}/${album.count}  |  ${new Date(p.t).toLocaleString()}  |  x${p.zoom ?? 1}\n` +
+      (deleteArmed ? 'Delete를 한 번 더 누르면 삭제됩니다' : 'A/D ←→ 넘기기 · Enter PNG 저장 · Delete 삭제 · G/Esc 닫기');
+  } else if (viewMode === 'camera') {
+    const deg = (r) => Math.round(r * 180 / Math.PI);
+    t = `CAMERA  x${camCtl.zoom.toFixed(1)}  |  pan ${deg(camCtl.pan)}°  tilt ${deg(camCtl.tilt)}°  |  ` +
+      `steady ${Math.round((1 - camCtl.steady) / 0.7 * 100)}%  |  film ${album.count}/${ROLL}  |  fx: ${filters.preset}\n` +
+      'W/S 줌 · A/D ←→ 좌우 · ↑↓ 기울이기 · Space 촬영 · X 엎드리기 · G 앨범 · E 돌아가기';
+  } else t =
     `mode: ${modes[state.mode]}  |  palette: ${PALETTES[state.palette].name}  |  ` +
     `light: ${light.toFixed(2)}${state.cycle ? ' (cycling)' : ''}  |  fx: ${filters.preset}\n` +
     `tile ${u.tx},${u.ty}: ${u.t?.name ?? '-'} (h ${u.h.toFixed(2)})  |  ${player.prone ? 'prone' : 'standing'}  |  animals ${animals.length} (seed ${SEED})` +
@@ -276,11 +395,15 @@ function frame(now) {
   update(dt);   // 게임 로직은 항상 모니터 주사율로
 
   // 투로 찍기: 화면(씬)은 N fps로만 갱신 → 셀 애니메이션처럼 뚝뚝 끊기는 움직임
-  const twos = filters.value('twos');
-  const step = twos ? Math.floor(clock * twos) : -2;
-  if (step !== sceneStep || step === -2) {
-    sceneStep = step;
-    renderScene();
+  if (viewMode !== 'album') {
+    if (shotPending) { shotPending = false; takePhoto(); sceneStep = -1; }
+    const twos = filters.value('twos');
+    const step = twos ? Math.floor(clock * twos) : -2;
+    if (step !== sceneStep || step === -2) {
+      sceneStep = step;
+      if (viewMode === 'camera') renderCamera(true);
+      else renderScene();
+    }
   }
   present();
   updateHud(lastLight);
@@ -288,7 +411,21 @@ function frame(now) {
 }
 
 await reloadMap(false);
+
+// 테스트/스크린샷용 시작 옵션: ?camera&zoom=4&pan=30&tilt=5  /  ?album
+if (map && q.has('camera')) {
+  enterCamera();
+  camCtl.zoom = camCtl.zoomT = Math.min(8, Math.max(1, parseFloat(q.get('zoom')) || 1));
+  camCtl.pan = (parseFloat(q.get('pan')) || 0) * Math.PI / 180;
+  camCtl.tilt = (parseFloat(q.get('tilt')) || 0) * Math.PI / 180;
+  camCtl.shutterT = 1;
+}
+if (map && q.has('album')) openAlbum();
 if (map) requestAnimationFrame(frame);
 
 // 디버그/스크린샷용
-window.__bitrender = { player, state, filters, SEED, get map() { return map; }, get animals() { return animals; } };
+window.__bitrender = {
+  player, state, filters, SEED, camCtl, album,
+  get map() { return map; }, get animals() { return animals; }, get viewMode() { return viewMode; },
+  shoot: () => { shotPending = true; }, enterCamera, exitCamera, openAlbum, takePhoto, present, renderCamera,
+};

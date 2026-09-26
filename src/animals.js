@@ -489,6 +489,11 @@ function frameKey(a) {
   return Object.keys(a.sp.sprites)[0];
 }
 
+// 3D 뷰용: 현재 프레임 스프라이트 (face = 화면 기준 'left' | 'right')
+export function animalImage(a, face) {
+  return a.sp.sprites[frameKey(a)][face];
+}
+
 export const isHigh = (a) => a.z > 5;   // 높이 나는 새는 모든 것 위에 그린다
 
 export function drawAnimalShadow(ctx, a, drawShadow, map) {

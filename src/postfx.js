@@ -56,6 +56,7 @@ uniform float uTime;
 uniform int   uMode;      // 0 = dither, 1 = 단순 양자화, 2 = 원본 버퍼
 uniform vec3  uC0, uC1, uC2, uC3;
 uniform float uBoil, uFog, uVignette;
+uniform float uFlipY;     // 1 = 입력이 WebGL FBO(아래가 원점)인 경우 (3D 카메라 뷰)
 
 float bayer2(vec2 a) { a = floor(a); return fract(a.x * 0.5 + a.y * a.y * 0.75); }
 float bayer4(vec2 a) { return bayer2(0.5 * a) * 0.25 + bayer2(a); }
@@ -74,7 +75,9 @@ void main() {
     sp = clamp(sp + floor(off * 2.5 * uBoil + 0.5), vec2(0.0), uRes - 1.0);
   }
 
-  vec4 c = texture2D(uScene, (sp + 0.5) / uRes);
+  vec2 suv = (sp + 0.5) / uRes;
+  if (uFlipY > 0.5) suv.y = 1.0 - suv.y;
+  vec4 c = texture2D(uScene, suv);
   if (uMode == 2) { gl_FragColor = vec4(c.rgb, 1.0); return; }
 
   // 디더 임계값은 월드 좌표 기준 → 카메라 이동 시 패턴 고정
@@ -288,14 +291,23 @@ export function createPostFX(canvas, W, H) {
       canvas.height = h;
     },
 
+    gl,
+
     // 패스 1: 씬 버퍼 → FBO (저해상도 4색)
-    renderScene({ source, cam, light, lightPos, mode, palette, time, uniforms }) {
+    //   source    : Canvas2D 씬 버퍼 (탑뷰)
+    //   sourceTex : 이미 GPU에 있는 씬 텍스처 (3D 카메라 뷰). 아래가 원점이라 뒤집어 읽는다
+    renderScene({ source, sourceTex, cam, light, lightPos, mode, palette, time, uniforms }) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
       gl.viewport(0, 0, W, H);
       use(dither);
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, sceneTex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+      if (sourceTex) {
+        gl.bindTexture(gl.TEXTURE_2D, sourceTex);
+      } else {
+        gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+      }
+      dither.f1('uFlipY', sourceTex ? 1 : 0);
       dither.i1('uScene', 0);
       dither.f2('uRes', W, H);
       dither.f2('uCam', cam.x, cam.y);
@@ -306,6 +318,27 @@ export function createPostFX(canvas, W, H) {
       setPalette(dither, palette, [0, 1, 2, 3]);
       setUniforms(dither, uniforms);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
+    },
+
+    // 패스 1 결과(4색 160x144)를 ImageData로 읽는다 — 사진 저장용 (필름 효과 이전)
+    readLow() {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      const px = new Uint8Array(W * H * 4);
+      gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      const img = new ImageData(W, H);
+      for (let y = 0; y < H; y++) {
+        img.data.set(px.subarray((H - 1 - y) * W * 4, (H - y) * W * 4), y * W * 4);   // 위아래 뒤집기
+      }
+      return img;
+    },
+
+    // 저장된 사진(160x144)을 패스 1 결과 자리에 올린다 → 앨범에서 필름 효과를 입혀 보기
+    showImage(image) {
+      gl.bindTexture(gl.TEXTURE_2D, lowTex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     },
 
     // 패스 2: FBO → 화면 (필름 효과). 매 프레임 호출
