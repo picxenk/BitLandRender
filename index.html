@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BitRender MVP</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #1a1618;
+      color: #a7a0a6;
+      font: 12px/1.5 ui-monospace, Menlo, monospace;
+    }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #app { display: flex; gap: 20px; align-items: flex-start; }
+    #view { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+    #screen { display: block; }
+    #hud { text-align: center; white-space: pre; }
+    #help { text-align: center; max-width: 640px; }
+    kbd { color: #efe6c5; }
+
+    /* ── 필터 패널 ── */
+    #fx { width: 250px; user-select: none; }
+    .fx-head { display: flex; justify-content: space-between; margin-bottom: 6px; }
+    .fx-title { color: #efe6c5; }
+    .fx-preset { color: #c0504d; }
+    .fx-presets { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+    .fx-presets button {
+      font: inherit; color: #a7a0a6; background: #2a2428;
+      border: 1px solid #4a3f46; padding: 1px 7px; cursor: pointer;
+    }
+    .fx-presets button.on { color: #1a1618; background: #efe6c5; border-color: #efe6c5; }
+    .fx-group { margin: 8px 0 2px; color: #6f6570; border-bottom: 1px solid #3a3238; }
+    .fx-row { display: grid; grid-template-columns: 16px 14px 1fr 70px 34px; gap: 5px;
+              align-items: center; cursor: pointer; padding: 1px 0; }
+    .fx-row.off .fx-name, .fx-row.off .fx-val { opacity: 0.45; }
+    .fx-row input[type=checkbox] { margin: 0; accent-color: #c0504d; }
+    .fx-row input[type=range] { width: 70px; margin: 0; accent-color: #efe6c5; }
+    .fx-val { text-align: right; color: #efe6c5; }
+    .fx-hint { margin-top: 10px; color: #6f6570; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="view">
+      <canvas id="screen"></canvas>
+      <div id="hud"></div>
+      <div id="help">
+        <kbd>WASD/←↑↓→</kbd> 이동 ·
+        <kbd>X</kbd> 엎드리기/일어서기 ·
+        <kbd>T</kbd> 낮/밤 사이클 ·
+        <kbd>B</kbd> 디더 on/off ·
+        <kbd>R</kbd> 원본 버퍼 보기 ·
+        <kbd>P</kbd> 팔레트 변경 ·
+        <kbd>C</kbd> 충돌 영역 보기 ·
+        <kbd>L</kbd> 맵 다시 불러오기 ·
+        <kbd>1–0</kbd> 필터 토글 ·
+        <kbd>F</kbd> 필터 프리셋
+      </div>
+    </div>
+    <aside id="fx"></aside>
+  </div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
