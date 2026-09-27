@@ -64,6 +64,59 @@ export function mountFilterPanel(root, fs) {
   sync();
 }
 
+// 디더 패널: DITHER_OPTIONS 에서 자동 생성 (select / range / toggle)
+export function mountDitherPanel(root, ds, options) {
+  root.innerHTML = '';
+  const head = el('div', 'fx-head');
+  head.append(el('span', 'fx-title', '디더'), el('span', 'fx-preset'));
+  root.append(head);
+
+  const sync = [];
+  for (const o of options) {
+    const row = el('label', 'dx-row');
+    row.append(el('span', 'fx-name', o.label));
+    let input;
+    if (o.type === 'select') {
+      input = el('select');
+      for (const [k, lab] of o.options) {
+        const opt = el('option', '', lab);
+        opt.value = k;
+        input.append(opt);
+      }
+      input.onchange = () => { ds.set(o.id, input.value); input.blur(); };
+      sync.push(() => { input.value = ds.get(o.id); });
+      row.append(input, el('span', 'fx-val'));
+    } else if (o.type === 'range') {
+      input = el('input');
+      Object.assign(input, { type: 'range', min: o.min, max: o.max, step: o.step });
+      const val = el('span', 'fx-val');
+      input.oninput = () => ds.set(o.id, input.value);
+      input.onchange = () => input.blur();
+      sync.push(() => {
+        if (document.activeElement !== input) input.value = ds.get(o.id);
+        const v = ds.get(o.id);
+        val.textContent = o.step >= 1 ? String(v) : v.toFixed(2);
+      });
+      row.append(input, val);
+    } else {
+      input = el('input');
+      input.type = 'checkbox';
+      input.onchange = () => { ds.set(o.id, input.checked); input.blur(); };
+      sync.push(() => { input.checked = ds.get(o.id); });
+      row.append(input, el('span', 'fx-val'));
+    }
+    root.append(row);
+  }
+  root.append(el('div', 'fx-hint', 'K / Shift+K 패턴 바꾸기'));
+
+  const update = () => {
+    head.querySelector('.fx-preset').textContent = ds.label;
+    sync.forEach((fn) => fn());
+  };
+  ds.onChange(update);
+  update();
+}
+
 function el(tag, cls = '', text) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;

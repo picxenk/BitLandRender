@@ -25,7 +25,12 @@
     kbd { color: #efe6c5; }
 
     /* ── 필터 패널 ── */
-    #fx { width: 250px; user-select: none; }
+    #side { width: 250px; user-select: none; max-height: calc(100vh - 20px); overflow-y: auto; }
+    #dither { margin-bottom: 14px; }
+    .dx-row { display: grid; grid-template-columns: 1fr 118px 34px; gap: 5px; align-items: center; padding: 1px 0; }
+    .dx-row select { font: inherit; color: #efe6c5; background: #2a2428; border: 1px solid #4a3f46; width: 118px; }
+    .dx-row input[type=range] { width: 118px; margin: 0; accent-color: #efe6c5; }
+    .dx-row input[type=checkbox] { margin: 0; accent-color: #c0504d; justify-self: start; }
     .fx-head { display: flex; justify-content: space-between; margin-bottom: 6px; }
     .fx-title { color: #efe6c5; }
     .fx-preset { color: #c0504d; }
@@ -57,6 +62,7 @@
         <kbd>G</kbd> 앨범 ·
         <kbd>T</kbd> 낮/밤 사이클 ·
         <kbd>B</kbd> 디더 on/off ·
+        <kbd>K</kbd> 디더 패턴 ·
         <kbd>R</kbd> 원본 버퍼 보기 ·
         <kbd>P</kbd> 팔레트 변경 ·
         <kbd>C</kbd> 충돌 영역 보기 ·
@@ -65,7 +71,10 @@
         <kbd>F</kbd> 필터 프리셋
       </div>
     </div>
-    <aside id="fx"></aside>
+    <aside id="side">
+      <div id="dither"></div>
+      <div id="fx"></div>
+    </aside>
   </div>
   <script type="module" src="./src/main.js"></script>
 </body>

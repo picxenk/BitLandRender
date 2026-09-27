@@ -1,9 +1,10 @@
 import { createPostFX, PALETTES } from './postfx.js';
-import { PLAYER, PLAYER_PRONE } from './sprites.js';
+import { PLAYER, PLAYER_PRONE, WALK_FRAME_PX, PRONE_FRAME_PX } from './sprites.js';
 import { TILE } from './tiles.js';
 import { loadMap, drawObject, drawShadow } from './map.js';
 import { FILTERS, createFilterState } from './filters.js';
-import { mountFilterPanel, FILTER_KEYS } from './ui.js';
+import { mountFilterPanel, mountDitherPanel, FILTER_KEYS } from './ui.js';
+import { DITHER_OPTIONS, createDitherState } from './dither.js';
 import { spawnAnimals, updateAnimals, drawAnimal, drawAnimalShadow, isHigh } from './animals.js';
 import { createCamera3D } from './camera3d.js';
 import { createCameraController, createAlbum, ROLL } from './photo.js';
@@ -32,6 +33,11 @@ const fx = createPostFX(screen, W, H);
 const filters = createFilterState(q.get('fx') || 'flood');
 mountFilterPanel(document.getElementById('fx'), filters);
 
+// 디더 설정: ?dither=bluenoise | cluster,scale:2,levels:2,accent:hard,anchor:screen,...
+const ditherState = createDitherState(q.get('dither') || '');
+mountDitherPanel(document.getElementById('dither'), ditherState, DITHER_OPTIONS);
+ditherState.onChange(() => { sceneStep = -1; });
+
 // 캔버스를 "정수배 CSS 크기 × devicePixelRatio" 실제 픽셀로 만든다.
 // 필름 패스는 이 해상도에서 돌기 때문에 그레인/색수차가 픽셀보다 섬세해진다.
 let pixelRatio = 1;
@@ -58,7 +64,8 @@ let deleteArmed = false;        // Delete 두 번 눌러야 삭제
 let shotPending = false;
 
 // ── 상태 ───────────────────────────────────────────────────────
-const player = { x: 0, y: 0, dir: 'down', anim: 0, moving: false, prone: q.has('prone') };
+// stride: 실제로 이동한 거리(px) — 걷기 프레임은 시간이 아니라 이 값으로 정한다 (발 미끄러짐 방지)
+const player = { x: 0, y: 0, dir: 'down', stride: 0, stepping: false, lastStep: -1, moving: false, prone: q.has('prone') };
 const state = {
   time: parseFloat(q.get('time')) || 0,          // ?time=0.5 → 자정에서 시작
   cycle: false,
@@ -107,7 +114,7 @@ const MOVE = {
 function enterCamera() {
   viewMode = 'camera';
   player.moving = false;
-  player.anim = 0;
+  player.stride = 0;
   camCtl.enter(player);
   sceneStep = -1;
 }
@@ -162,7 +169,8 @@ addEventListener('keydown', (e) => {
   if (e.code === 'KeyC') state.collision = !state.collision;
   if (e.code === 'KeyL') reloadMap(true);
   if (e.code === 'KeyF') filters.cyclePreset();
-  if (e.code === 'KeyX') { player.prone = !player.prone; player.anim = 0; }
+  if (e.code === 'KeyK') ditherState.cyclePattern(e.shiftKey ? -1 : 1);
+  if (e.code === 'KeyX') { player.prone = !player.prone; player.stride = 0; }
   const fi = FILTER_KEYS.indexOf(e.key);
   if (fi >= 0 && FILTERS[fi] && e.code.startsWith('Digit')) filters.toggle(FILTERS[fi].id);
 });
@@ -200,16 +208,20 @@ function update(dt) {
     // 이미 끼어 있는 상태면(맵 수정 직후 등) 자유롭게 빠져나오게 한다
     const stuck = !map.canOccupy(player.x, player.y, hc);
     // 축별로 따로 판정 → 벽을 따라 미끄러지듯 이동
+    const ox = player.x, oy = player.y;
     const nx = player.x + (dx / len) * d;
     if (stuck || map.canOccupy(nx, player.y, hc)) player.x = nx;
     const ny = player.y + (dy / len) * d;
     if (stuck || map.canOccupy(player.x, ny, hc)) player.y = ny;
 
     player.dir = dx ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
-    player.anim += dt;
-  } else {
-    player.anim = 0;
+    // 벽에 막혀 제자리면 발도 멈춘다
+    const moved = Math.hypot(player.x - ox, player.y - oy);
+    if (moved > 0.001) { player.stride += moved; player.lastStep = clock; }
   }
+  // 멈춘 뒤 0.1초 동안은 마지막 걸음 자세를 유지 (방향키를 바꿀 때 깜빡이지 않게), 그 뒤 선 자세로
+  player.stepping = player.lastStep >= 0 && clock - player.lastStep < 0.1;
+  if (!player.stepping) player.stride = 0;
 
   updateAnimals(animals, dt, map, player);
   if (state.cycle) state.time = (state.time + dt / DAY_LENGTH) % 1;
@@ -292,6 +304,7 @@ function renderScene() {
     palette: PALETTES[state.palette],
     time: clock,
     uniforms: filters.uniforms('dither'),
+    ditherOpts: ditherState.params(false),
   });
 }
 let lastLight = 1;
@@ -306,8 +319,9 @@ function renderCamera(withUI) {
   const light = dayLight();
   lastLight = light;
   if (withUI) camCtl.drawOverlay(ctx, W, H, { count: album.count });
+  const view = camCtl.view(player, map);
   const tex = cam3d.render({
-    ...camCtl.view(player, map),
+    ...view,
     light,
     time: clock,
     animals,
@@ -322,6 +336,8 @@ function renderCamera(withUI) {
     palette: PALETTES[state.palette],
     time: clock,
     uniforms: filters.uniforms('dither'),
+    ditherOpts: ditherState.params(true),
+    sphere: { yaw: view.yaw, pitch: view.pitch, fov: view.fov, ref: camCtl.base },
   });
 }
 
@@ -344,10 +360,15 @@ function present() {
 }
 
 function drawPlayer(px, py, inWater) {
-  const frames = (player.prone ? PLAYER_PRONE : PLAYER)[player.dir];
-  const rate = player.prone ? 5 : 8;   // 포복은 동작이 느리다
-  const f = player.moving ? frames[Math.floor(player.anim * rate) % frames.length] : frames[0];
-  const top = py - f.height + 1;
+  const set = (player.prone ? PLAYER_PRONE : PLAYER)[player.dir];
+  let f = set.idle, bob = 0;
+  if (player.stepping) {
+    // 프레임 = 이동 거리 ÷ 프레임당 거리. 속도가 바뀌어도(물, 포복) 보폭과 이동이 맞는다
+    const i = Math.floor(player.stride / (player.prone ? PRONE_FRAME_PX : WALK_FRAME_PX)) % set.walk.length;
+    f = set.walk[i];
+    bob = set.bob[i];              // 통과 자세에서 몸이 1px 올라간다
+  }
+  const top = py - f.height + 1 - bob;
   const left = px - (f.width >> 1);
   if (inWater) {
     // 얕은 물: 아랫부분을 자르고 물결 표시 (엎드리면 1줄만)
@@ -376,11 +397,11 @@ function updateHud(light) {
   } else if (viewMode === 'camera') {
     const deg = (r) => Math.round(r * 180 / Math.PI);
     t = `CAMERA  x${camCtl.zoom.toFixed(1)}  |  pan ${deg(camCtl.pan)}°  tilt ${deg(camCtl.tilt)}°  |  ` +
-      `steady ${Math.round((1 - camCtl.steady) / 0.7 * 100)}%  |  film ${album.count}/${ROLL}  |  fx: ${filters.preset}\n` +
+      `steady ${Math.round((1 - camCtl.steady) / 0.7 * 100)}%  |  film ${album.count}/${ROLL}  |  dither: ${ditherState.label}\n` +
       'W/S 줌 · A/D ←→ 좌우 · ↑↓ 기울이기 · Space 촬영 · X 엎드리기 · G 앨범 · E 돌아가기';
   } else t =
     `mode: ${modes[state.mode]}  |  palette: ${PALETTES[state.palette].name}  |  ` +
-    `light: ${light.toFixed(2)}${state.cycle ? ' (cycling)' : ''}  |  fx: ${filters.preset}\n` +
+    `light: ${light.toFixed(2)}${state.cycle ? ' (cycling)' : ''}  |  fx: ${filters.preset}  |  dither: ${ditherState.label}\n` +
     `tile ${u.tx},${u.ty}: ${u.t?.name ?? '-'} (h ${u.h.toFixed(2)})  |  ${player.prone ? 'prone' : 'standing'}  |  animals ${animals.length} (seed ${SEED})` +
     (map.warnings.length ? `  |  map warnings: ${map.warnings.length} (console)` : '');
   if (t !== hudText) hud.textContent = hudText = t;
@@ -425,7 +446,7 @@ if (map) requestAnimationFrame(frame);
 
 // 디버그/스크린샷용
 window.__bitrender = {
-  player, state, filters, SEED, camCtl, album,
+  player, state, filters, ditherState, SEED, camCtl, album,
   get map() { return map; }, get animals() { return animals; }, get viewMode() { return viewMode; },
-  shoot: () => { shotPending = true; }, enterCamera, exitCamera, openAlbum, takePhoto, present, renderCamera,
+  shoot: () => { shotPending = true; }, enterCamera, exitCamera, openAlbum, takePhoto, present, renderCamera, update,
 };

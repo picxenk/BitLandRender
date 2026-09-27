@@ -13,6 +13,8 @@
 //  모든 필터 유니폼은 0이면 "꺼짐". (filters.js 가 꺼진 필터에 0을 넘긴다)
 // ══════════════════════════════════════════════════════════════════
 
+import { getPattern } from './dither.js';
+
 export const PALETTES = [
   { name: 'Kinsplant', colors: ['#5a4b5c', '#a7a0a6', '#efe6c5', '#7c0a0a'] },
   { name: 'DMG',       colors: ['#306230', '#8bac0f', '#c4cfa1', '#0f380f'] },
@@ -58,8 +60,46 @@ uniform vec3  uC0, uC1, uC2, uC3;
 uniform float uBoil, uFog, uVignette;
 uniform float uFlipY;     // 1 = 입력이 WebGL FBO(아래가 원점)인 경우 (3D 카메라 뷰)
 
-float bayer2(vec2 a) { a = floor(a); return fract(a.x * 0.5 + a.y * a.y * 0.75); }
-float bayer4(vec2 a) { return bayer2(0.5 * a) * 0.25 + bayer2(a); }
+// ── 디더 옵션 (dither.js) ──
+uniform sampler2D uPattern;   // 임계값 패턴 (R = 임계값 × 256)
+uniform float uPatSize;       // 패턴 한 변 크기
+uniform float uPatScale;      // 패턴 한 칸 = N 픽셀
+uniform float uLevels;        // 2 = 1-bit, 3 = 3단계
+uniform float uContrast, uGamma;
+uniform float uBand;          // 1 = 일반 디더, 0에 가까울수록 평탄한 면은 단색(경계에만 디더)
+uniform float uAccentHard;    // 1 = 강조색을 디더 없이 딱 잘라서
+uniform float uAnimate;       // 1 = 패턴 위치가 초당 12번 바뀜
+uniform float uAnchor;        // 0 = 월드, 1 = 화면, 2 = 시야 구면 (3D 카메라)
+uniform vec3  uSF, uSR, uSU;  // 구면 고정용 카메라 기저 (앞/오른쪽/위)
+uniform vec2  uSTan;          // tan(fov/2) (가로, 세로)
+uniform float uSK;            // 화면 중심의 1 라디안 = 몇 픽셀
+uniform vec2  uSRefF, uSRefR; // 구면 좌표 기준 방향 (xz 평면, 카메라 세션 동안 고정)
+
+// 패턴 좌표: 어디에 고정하느냐에 따라 달라진다
+vec2 patternCoord(vec2 pix, vec2 wp) {
+  vec2 c = wp;
+  if (uAnchor > 1.5) {
+    // Obra Dinn 방식: 픽셀의 시야 방향을 (yaw, pitch)로 바꿔 패턴을 카메라를 둘러싼 구에 입힌다.
+    // 같은 방향 = 같은 패턴 값이라, 좌우로 돌려도 패턴이 세계와 함께 움직인다.
+    vec2 ndc = vec2((pix.x + 0.5) / uRes.x * 2.0 - 1.0, 1.0 - (pix.y + 0.5) / uRes.y * 2.0);
+    vec3 d = normalize(uSF + uSR * ndc.x * uSTan.x + uSU * ndc.y * uSTan.y);
+    float pitch = asin(clamp(d.y, -1.0, 1.0));
+    float yaw = atan(dot(d.xz, uSRefR), dot(d.xz, uSRefF));
+    c = vec2(yaw * cos(pitch), -pitch) * uSK;
+  } else if (uAnchor > 0.5) {
+    c = pix;
+  }
+  c = floor(c / uPatScale);
+  if (uAnimate > 0.5) {
+    float fr = floor(uTime * 12.0);
+    c += floor(vec2(hash12(vec2(fr, 1.0)), hash12(vec2(fr, 2.0))) * uPatSize);
+  }
+  return c;
+}
+
+float threshold(vec2 c) {
+  return texture2D(uPattern, (mod(c, uPatSize) + 0.5) / uPatSize).r * (255.0 / 256.0);
+}
 
 void main() {
   vec2 pix = floor(vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y));  // 좌상단 원점
@@ -80,8 +120,8 @@ void main() {
   vec4 c = texture2D(uScene, suv);
   if (uMode == 2) { gl_FragColor = vec4(c.rgb, 1.0); return; }
 
-  // 디더 임계값은 월드 좌표 기준 → 카메라 이동 시 패턴 고정
-  float th = (uMode == 1) ? 0.5 : bayer4(wp) + 1.0 / 32.0;
+  // 디더 임계값: 패턴 텍스처에서 읽는다 (고정 기준은 uAnchor)
+  float th = (uMode == 1) ? 0.5 : threshold(patternCoord(pix, wp));
 
   float accent = clamp(c.r - c.g, 0.0, 1.0);
   float lum = clamp(c.g / max(1.0 - accent, 0.001), 0.0, 1.0);
@@ -95,7 +135,8 @@ void main() {
     accent *= 1.0 - m;
   }
 
-  if (accent + th >= 1.0) { gl_FragColor = vec4(uC3, 1.0); return; }
+  bool isAccent = uAccentHard > 0.5 ? accent >= 0.5 : accent + th >= 1.0;
+  if (isAccent) { gl_FragColor = vec4(uC3, 1.0); return; }
 
   // 조명 (낮/밤 + 랜턴)
   float glow = 1.0 - smoothstep(6.0, 46.0, distance(pix, uLightPos));
@@ -109,8 +150,19 @@ void main() {
     lum *= 1.0 - clamp(uVignette * smoothstep(0.5, 1.05, r), 0.0, 1.0);
   }
 
-  float q = clamp(floor(lum * 2.0 + th), 0.0, 2.0);
-  gl_FragColor = vec4(q < 0.5 ? uC0 : (q < 1.5 ? uC1 : uC2), 1.0);
+  // 톤 곡선 (감마 → 대비)
+  if (uGamma != 1.0) lum = pow(lum, uGamma);
+  if (uContrast != 1.0) lum = clamp((lum - 0.5) * uContrast + 0.5, 0.0, 1.0);
+
+  // 양자화: 단계 사이의 위치 f 를 디더 폭(band)으로 좁히면, 경계에서 먼 곳은 단색이 된다
+  float L1 = uLevels - 1.0;
+  float x = lum * L1;
+  float base = floor(x);
+  float f = x - base;
+  if (uBand < 1.0) f = clamp((f - 0.5) / uBand + 0.5, 0.0, 1.0);
+  float q = clamp(base + step(1.0, f + th), 0.0, L1);
+  if (uLevels < 2.5) gl_FragColor = vec4(q < 0.5 ? uC0 : uC2, 1.0);     // 1-bit: 가장 어두운색 / 가장 밝은색
+  else gl_FragColor = vec4(q < 0.5 ? uC0 : (q < 1.5 ? uC1 : uC2), 1.0);
 }
 `;
 
@@ -282,6 +334,59 @@ export function createPostFX(canvas, W, H) {
     gl.vertexAttribPointer(prog.aPos, 2, gl.FLOAT, false, 0, 0);
   }
   const setUniforms = (prog, obj) => { for (const k in obj) prog.f1(k, obj[k]); };
+
+  // ── 디더 패턴 텍스처 (패턴 이름별로 한 번 생성) ──
+  const patTex = new Map();
+  function patternTexture(p) {
+    let t = patTex.get(p.name);
+    if (!t) {
+      t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, p.size, p.size, 0, gl.RGBA, gl.UNSIGNED_BYTE, p.data);
+      patTex.set(p.name, t);
+    }
+    return t;
+  }
+  const DEFAULT_DITHER = {
+    pattern: getPattern('bayer4'), scale: 1, levels: 3, contrast: 1, gamma: 1, band: 1, accentHard: false, animate: false, anchor: 0,
+  };
+
+  function setDither(o, sphere) {
+    const p = o.pattern;
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, patternTexture(p));
+    dither.i1('uPattern', 1);
+    dither.f1('uPatSize', p.size);
+    dither.f1('uPatScale', o.scale);
+    dither.f1('uLevels', o.levels);
+    dither.f1('uContrast', o.contrast);
+    dither.f1('uGamma', o.gamma);
+    dither.f1('uBand', o.band);
+    dither.f1('uAccentHard', o.accentHard ? 1 : 0);
+    dither.f1('uAnimate', o.animate ? 1 : 0);
+    // 구면 고정은 카메라 방향이 있을 때만
+    const anchor = o.anchor === 2 && !sphere ? 1 : o.anchor;
+    dither.f1('uAnchor', anchor);
+    if (anchor === 2) {
+      const { yaw, pitch, fov, ref } = sphere;
+      const cp = Math.cos(pitch);
+      const f = [cp * Math.cos(yaw), Math.sin(pitch), cp * Math.sin(yaw)];
+      const r = [-Math.sin(yaw), 0, Math.cos(yaw)];
+      const u = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]];
+      const tanY = Math.tan(fov / 2);
+      dither.f3('uSF', f);
+      dither.f3('uSR', r);
+      dither.f3('uSU', u);
+      dither.f2('uSTan', tanY * (W / H), tanY);
+      dither.f1('uSK', (H / 2) / tanY);
+      dither.f2('uSRefF', Math.cos(ref), Math.sin(ref));
+      dither.f2('uSRefR', -Math.sin(ref), Math.cos(ref));
+    }
+  }
   const setPalette = (prog, palette, ids) => ids.forEach((i) => prog.f3('uC' + i, hexToRgb(palette.colors[i])));
 
   return {
@@ -296,7 +401,9 @@ export function createPostFX(canvas, W, H) {
     // 패스 1: 씬 버퍼 → FBO (저해상도 4색)
     //   source    : Canvas2D 씬 버퍼 (탑뷰)
     //   sourceTex : 이미 GPU에 있는 씬 텍스처 (3D 카메라 뷰). 아래가 원점이라 뒤집어 읽는다
-    renderScene({ source, sourceTex, cam, light, lightPos, mode, palette, time, uniforms }) {
+    //   ditherOpts: dither.js params() 결과
+    //   sphere    : { yaw, pitch, fov, ref } — 구면 고정용 카메라 방향 (3D 카메라 뷰)
+    renderScene({ source, sourceTex, cam, light, lightPos, mode, palette, time, uniforms, ditherOpts, sphere }) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
       gl.viewport(0, 0, W, H);
       use(dither);
@@ -317,7 +424,9 @@ export function createPostFX(canvas, W, H) {
       dither.i1('uMode', mode);
       setPalette(dither, palette, [0, 1, 2, 3]);
       setUniforms(dither, uniforms);
+      setDither(ditherOpts || DEFAULT_DITHER, sphere);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.activeTexture(gl.TEXTURE0);
     },
 
     // 패스 1 결과(4색 160x144)를 ImageData로 읽는다 — 사진 저장용 (필름 효과 이전)
