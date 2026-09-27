@@ -41,10 +41,12 @@ ditherState.onChange(() => { sceneStep = -1; });
 // 캔버스를 "정수배 CSS 크기 × devicePixelRatio" 실제 픽셀로 만든다.
 // 필름 패스는 이 해상도에서 돌기 때문에 그레인/색수차가 픽셀보다 섬세해진다.
 let pixelRatio = 1;
+let screenScale = 1;            // CSS 배율 (저해상도 1px = 화면 몇 CSS px)
 function fit() {
   const panel = 270;
   const s = Math.max(1, Math.floor(Math.min((innerWidth - panel - 40) / W, (innerHeight - 110) / H)));
   pixelRatio = Math.min(2, window.devicePixelRatio || 1);
+  screenScale = s;
   screen.style.width = W * s + 'px';
   screen.style.height = H * s + 'px';
   fx.resize(Math.round(W * s * pixelRatio), Math.round(H * s * pixelRatio));
@@ -139,7 +141,12 @@ function albumKey(e) {
   const n = album.count;
   if (e.code === 'ArrowLeft' || e.code === 'KeyA') albumIndex = (albumIndex - 1 + n) % n;
   else if (e.code === 'ArrowRight' || e.code === 'KeyD') albumIndex = (albumIndex + 1) % n;
-  else if (e.code === 'Enter') album.download(albumIndex);
+  else if (e.code === 'Enter') {
+    // Enter = 화면에 보이는 필름 필터를 입혀서 · Shift+Enter = 필터 없는 원본 4색
+    album.download(albumIndex, e.shiftKey ? null : filmedPhoto());
+    flashHud(e.shiftKey ? 'PNG 저장: 원본 (필터 없음)' : `PNG 저장: 필터 포함 (fx: ${filters.preset})`);
+    return;
+  }
   else if (e.code === 'Delete' || e.code === 'Backspace') {
     if (!deleteArmed) { deleteArmed = true; return; }
     album.remove(albumIndex);
@@ -349,6 +356,19 @@ function takePhoto() {
   camCtl.shutter();
 }
 
+// 앨범 사진에 지금 화면과 같은 필름 필터를 입혀 4배 크기(640x576)로 렌더링
+//  - 그레인 입자 크기를 화면과 맞추려고 pixelRatio 대신 (4 / 화면 배율)을 쓴다
+//  - 앨범에서는 시간이 멈춰 있으므로 그레인/먼지 무늬도 화면과 같다
+const EXPORT_SCALE = 4;
+function filmedPhoto() {
+  return fx.renderFilm(W * EXPORT_SCALE, H * EXPORT_SCALE, {
+    time: clock,
+    palette: PALETTES[state.palette],
+    pixelRatio: EXPORT_SCALE / screenScale,
+    uniforms: filters.uniforms('film'),
+  });
+}
+
 // 패스 2(필름). 그레인/먼지가 살아 있도록 매 프레임 호출
 function present() {
   fx.present({
@@ -393,7 +413,7 @@ function updateHud(light) {
   else if (viewMode === 'album') {
     const p = album.get(albumIndex);
     t = `ALBUM ${albumIndex + 1}/${album.count}  |  ${new Date(p.t).toLocaleString()}  |  x${p.zoom ?? 1}\n` +
-      (deleteArmed ? 'Delete를 한 번 더 누르면 삭제됩니다' : 'A/D ←→ 넘기기 · Enter PNG 저장 · Delete 삭제 · G/Esc 닫기');
+      (deleteArmed ? 'Delete를 한 번 더 누르면 삭제됩니다' : 'A/D ←→ 넘기기 · Enter PNG 저장(필터 포함) · Shift+Enter 원본 · Delete 삭제 · G/Esc 닫기');
   } else if (viewMode === 'camera') {
     const deg = (r) => Math.round(r * 180 / Math.PI);
     t = `CAMERA  x${camCtl.zoom.toFixed(1)}  |  pan ${deg(camCtl.pan)}°  tilt ${deg(camCtl.tilt)}°  |  ` +
@@ -448,5 +468,5 @@ if (map) requestAnimationFrame(frame);
 window.__bitrender = {
   player, state, filters, ditherState, SEED, camCtl, album,
   get map() { return map; }, get animals() { return animals; }, get viewMode() { return viewMode; },
-  shoot: () => { shotPending = true; }, enterCamera, exitCamera, openAlbum, takePhoto, present, renderCamera, update,
+  shoot: () => { shotPending = true; }, enterCamera, exitCamera, openAlbum, takePhoto, present, renderCamera, update, filmedPhoto,
 };

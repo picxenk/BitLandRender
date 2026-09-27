@@ -227,19 +227,28 @@ export function createAlbum(W, H) {
       save();
     },
 
-    // 4배 확대 PNG 다운로드 (nearest)
-    download(i, scale = 4) {
+    // PNG 다운로드
+    //   filmed: 필름 필터가 입혀진 ImageData (postfx.renderFilm) → 그대로 저장
+    //   없으면: 원본 4색 프레임을 scale 배 확대(nearest)해서 저장
+    download(i, filmed = null, scale = 4) {
       const p = list[i];
       if (!p) return;
       const cv = document.createElement('canvas');
-      cv.width = W * scale;
-      cv.height = H * scale;
       const x = cv.getContext('2d');
-      x.imageSmoothingEnabled = false;
-      x.drawImage(p.canvas, 0, 0, cv.width, cv.height);
+      if (filmed) {
+        cv.width = filmed.width;
+        cv.height = filmed.height;
+        x.putImageData(filmed, 0, 0);
+      } else {
+        cv.width = W * scale;
+        cv.height = H * scale;
+        x.imageSmoothingEnabled = false;
+        x.drawImage(p.canvas, 0, 0, cv.width, cv.height);
+      }
       const a = document.createElement('a');
       a.href = cv.toDataURL('image/png');
-      a.download = `bitrender-${new Date(p.t).toISOString().replace(/[:.]/g, '-')}.png`;
+      const stamp = new Date(p.t).toISOString().replace(/[:.]/g, '-');
+      a.download = `bitrender-${stamp}${filmed ? '' : '-raw'}.png`;
       a.click();
     },
   };

@@ -451,20 +451,48 @@ export function createPostFX(canvas, W, H) {
     },
 
     // 패스 2: FBO → 화면 (필름 효과). 매 프레임 호출
-    present({ time, palette, pixelRatio, uniforms }) {
+    present(opts) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      gl.viewport(0, 0, canvas.width, canvas.height);
-      use(film);
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, lowTex);
-      film.i1('uImg', 0);
-      film.f2('uRes', W, H);
-      film.f2('uOut', canvas.width, canvas.height);
-      film.f1('uPx', pixelRatio);
-      film.f1('uTime', time);
-      setPalette(film, palette, [0, 2]);
-      setUniforms(film, uniforms);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      drawFilm(canvas.width, canvas.height, opts);
+    },
+
+    // 패스 2를 화면 대신 w×h 오프스크린에 그려서 ImageData로 돌려준다 (필터가 입혀진 PNG 저장용)
+    // 화면에 보이는 것과 같은 필터·같은 시각(time)을 쓰면 같은 그림이 나온다
+    renderFilm(w, h, opts) {
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      const fb = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      drawFilm(w, h, opts);
+      const px = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.deleteFramebuffer(fb);
+      gl.deleteTexture(tex);
+      const img = new ImageData(w, h);
+      for (let y = 0; y < h; y++) img.data.set(px.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4);
+      return img;
     },
   };
+
+  function drawFilm(outW, outH, { time, palette, pixelRatio, uniforms }) {
+    gl.viewport(0, 0, outW, outH);
+    use(film);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, lowTex);
+    film.i1('uImg', 0);
+    film.f2('uRes', W, H);
+    film.f2('uOut', outW, outH);
+    film.f1('uPx', pixelRatio);
+    film.f1('uTime', time);
+    setPalette(film, palette, [0, 2]);
+    setUniforms(film, uniforms);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
 }
